@@ -1,4 +1,4 @@
-FROM ghost:2.6.2
+FROM ghost:2.6.2-alpine
 
 LABEL maintainer "mats16 <mats.kazuki@gmail.com>"
 
