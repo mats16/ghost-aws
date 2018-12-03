@@ -6,4 +6,7 @@ RUN npm install -g ghost-storage-adapter-s3@2.7.0 && \
     mkdir -p ./content.orig/adapters/storage && \
     ln -s /usr/local/lib/node_modules/ghost-storage-adapter-s3 ./content.orig/adapters/storage/s3
 
-RUN wget -O - https://github.com/TryGhost/Editorial/archive/1.0.tar.gz | tar zxvf - -C ./content.orig/themes
+RUN wget -O - https://github.com/TryGhost/Massively/archive/1.0.1.tar.gz | tar zxvf - -C ./content.orig/themes && \
+    wget -O - https://github.com/TryGhost/Editorial/archive/1.0.tar.gz | tar zxvf - -C ./content.orig/themes && \
+    wget -O - https://github.com/zutrinken/attila/archive/1.7.6.tar.gz | tar zxvf - -C ./content.orig/themes
+
