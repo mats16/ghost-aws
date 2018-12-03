@@ -1,0 +1,343 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Ghost CMS on Amazon ECS'
+
+Parameters:
+
+  ClusterName:
+    Description: The cluster name provided when the cluster was created. If it is incorrect, nodes will not be able to join the cluster.
+    Type: String
+    Default: default
+
+  EcsLaunchType:
+    Description: Please choose "None" ,if you don't want to create ECS Service.
+    Type: String
+    Default: None
+    AllowedValues:
+      - EC2
+      - FARGATE
+      - None
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+
+  PublicSubnetIds:
+    Description: The subnet where ELB can be created.
+    Type: List<AWS::EC2::Subnet::Id>
+
+  PrivateSubnetIds:
+    Description: The subnet where ECS and RDS can be created.
+    Type: List<AWS::EC2::Subnet::Id>
+
+  DBMasterUsername:
+    Type: String
+    Default: admin
+
+  DBMasterUserPassword:
+    Type: String
+    Default: password
+
+  DatabaseName:
+    Type: String
+    Default: ghost
+
+  GhostImage:
+    Description: Docker Image
+    Type: String
+    Default: quay.io/mats16/ghost-aws:2.6.2-2.7.0
+
+  GhostUrl:
+    Description: Set the public URL for your blog
+    Type: String
+    Default: https://example.com
+
+  GhostStorageBucket:
+    Type: String
+
+  GhostMailFrom:
+    Type: String
+    Default: "'Custom Name' <myemail@address.com>"
+
+  GhostMailSesHost:
+    Type: String
+    AllowedValues:
+      - email-smtp.us-east-1.amazonaws.com
+      - email-smtp.us-west-2.amazonaws.com
+      - email-smtp.eu-west-1.amazonaws.com
+
+  GhostMailSesUser:
+    Description: SMTP Username created in IAM User
+    Type: String
+
+  GhostMailSesPass:
+    Description: SMTP Password created in IAM User
+    Type: String
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "ECS Configuration"
+        Parameters:
+          - ClusterName
+          - EcsLaunchType
+      - Label:
+          default: "Network Configuration"
+        Parameters:
+          - VpcId
+          - PublicSubnetIds
+          - PrivateSubnetIds
+      - Label:
+          default: Database Configuration
+        Parameters:
+          - DBMasterUsername
+          - DBMasterUserPassword
+          - DatabaseName
+      - Label:
+          default: Ghost Configuration
+        Parameters:
+          - GhostImage
+          - GhostUrl
+          - GhostStorageBucket
+          - GhostMailFrom
+          - GhostMailSesHost
+          - GhostMailSesUser
+          - GhostMailSesPass
+
+Conditions:
+  CreateEcsService: !Not [ !Equals [ !Ref EcsLaunchType, None ] ]
+
+Resources:
+
+  # Networking
+  elbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: for Ghost LoadBalancer
+      VpcId:
+        !Ref VpcId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '443'
+        ToPort: '443'
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+
+  appSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: for Ghost Container
+      VpcId:
+        !Ref VpcId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '2368'
+        ToPort: '2368'
+        SourceSecurityGroupId: !Ref elbSecurityGroup
+
+  dbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: for Ghost Database
+      VpcId:
+        !Ref VpcId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '3306'
+        ToPort: '3306'
+        SourceSecurityGroupId: !Ref appSecurityGroup
+
+  # LoadBalancer
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: application
+      Scheme: internet-facing
+      Subnets: !Ref PublicSubnetIds
+      SecurityGroups:
+        - !Ref elbSecurityGroup
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '10'
+
+  TargetGroup1:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetType: ip
+      Protocol: HTTP
+      Port: 2368
+      VpcId: !Ref VpcId
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '10'
+        - Key: slow_start.duration_seconds
+          Value: '30'
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Protocol: HTTP
+      Port: '80'
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup1
+
+  # Fargate
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: ghost-storage-adapter-s3
+          PolicyDocument: !Sub |
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Sid": "VisualEditor0",
+                        "Effect": "Allow",
+                        "Action": "s3:ListBucket",
+                        "Resource": "arn:aws:s3:::${GhostStorageBucket}"
+                    },
+                    {
+                        "Sid": "VisualEditor1",
+                        "Effect": "Allow",
+                        "Action": [
+                            "s3:PutObject",
+                            "s3:GetObject",
+                            "s3:PutObjectVersionAcl",
+                            "s3:DeleteObject",
+                            "s3:PutObjectAcl"
+                        ],
+                        "Resource": "arn:aws:s3:::${GhostStorageBucket}/*"
+                    }
+                ]
+            }
+        #- PolicyName: ghost-mail-ses
+        #  PolicyDocument: |
+        #    {
+        #        "Version": "2012-10-17",
+        #        "Statement": [
+        #            {
+        #                "Effect": "Allow",
+        #                "Action": "ses:SendRawEmail",
+        #                "Resource": "*"
+        #            }
+        #        ]
+        #    }            
+
+  LogGroup: 
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${AWS::StackName}
+      RetentionInDays: 7
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AWS::StackName}
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      RequiresCompatibilities: ["EC2", "FARGATE"]
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/ecsTaskExecutionRole
+      Cpu: 256
+      Memory: 512
+      ContainerDefinitions:
+        - Name: ghost
+          Image: !Ref GhostImage
+          Memory: 256
+          Essential: true
+          PortMappings: 
+            - ContainerPort: 2368
+          Environment:
+            - Name: url
+              Value: !Ref GhostUrl
+            - Name: database__client
+              Value: mysql
+            - Name: database__connection__host
+              Value: !GetAtt DBCluster.Endpoint.Address
+            - Name: database__connection__user
+              Value: !Ref DBMasterUsername
+            - Name: database__connection__password
+              Value: !Ref DBMasterUserPassword
+            - Name: database__connection__database
+              Value: !Ref DatabaseName
+            - Name: storage__active
+              Value: s3
+            - Name: storage__s3__bucket
+              Value: !Ref GhostStorageBucket
+            - Name: mail__transport
+              Value: SMTP
+            - Name: mail__options__host
+              Value: !Ref GhostMailSesHost
+            - Name: mail__options__port
+              Value: 465
+            - Name: mail__options__service
+              Value: SES
+            - Name: mail__options__auth__user
+              Value: !Ref GhostMailSesUser
+            - Name: mail__options__auth__pass
+              Value: !Ref GhostMailSesPass
+            - Name: mail__from
+              Value: !Ref GhostMailFrom
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Ref LogGroup
+              awslogs-stream-prefix: stdout
+
+  Service:
+    Type: AWS::ECS::Service
+    Condition: CreateEcsService
+    DependsOn: Listener
+    Properties:
+      LaunchType: !Ref EcsLaunchType
+      TaskDefinition: !Ref TaskDefinition
+      Cluster: !Ref ClusterName
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups: 
+            - !Ref appSecurityGroup
+      LoadBalancers:
+        - TargetGroupArn: !Ref TargetGroup1
+          ContainerName: ghost
+          ContainerPort: 2368
+          
+  # Database
+  DBSubnetGroup: 
+    Type: "AWS::RDS::DBSubnetGroup"
+    Properties:
+      DBSubnetGroupDescription: Created by CloudFormation
+      SubnetIds: !Ref PrivateSubnetIds
+
+  DBCluster:
+    Type: "AWS::RDS::DBCluster"
+    Properties:
+      BackupRetentionPeriod: 7
+      DatabaseName: !Ref DatabaseName
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      Engine: aurora
+      EngineMode: serverless
+      MasterUsername: !Ref DBMasterUsername
+      MasterUserPassword: !Ref DBMasterUserPassword
+      StorageEncrypted: true
+      VpcSecurityGroupIds:
+        - !Ref dbSecurityGroup
