@@ -8,5 +8,5 @@ RUN npm install -g ghost-storage-adapter-s3@2.7.0 && \
 
 RUN wget -O - https://github.com/TryGhost/Massively/archive/1.0.1.tar.gz | tar zxvf - -C ./content.orig/themes && \
     wget -O - https://github.com/TryGhost/Editorial/archive/1.0.tar.gz | tar zxvf - -C ./content.orig/themes && \
-    wget -O - https://github.com/zutrinken/attila/archive/1.7.6.tar.gz | tar zxvf - -C ./content.orig/themes
-
+    wget -O - https://github.com/zutrinken/attila/archive/1.7.6.tar.gz | tar zxvf - -C ./content.orig/themes && \
+    wget -O - https://www.hauntedthemes.com/assets/files/zvikov-master.zip | tar zxvf - -C ./content.orig/themes
